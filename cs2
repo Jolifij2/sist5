@@ -1,0 +1,212 @@
+using System;
+using System.IO;
+using System.Text;
+using System.Threading;
+
+namespace Task4_CriticalSection_FileProcessing
+{
+    class Program
+    {
+        // Объект для критической секции (синхронизация доступа к файлу и консоли)
+        static readonly object fileLock = new object();
+        static readonly object consoleLock = new object();
+        
+        // События для синхронизации потоков
+        static AutoResetEvent firstThreadCompletedEvent = new AutoResetEvent(false);
+        
+        // Результаты первого потока
+        static int sentenceCount = 0;
+        static string fileContent = string.Empty;
+        static string filePath = string.Empty;
+
+        static void Main(string[] args)
+        {
+            Console.WriteLine("=== Задание 4: Обработка файла с использованием критических секций ===\n");
+            
+            // Запрос пути к файлу у пользователя
+            Console.Write("Введите путь к текстовому файлу: ");
+            filePath = Console.ReadLine();
+            
+            // Проверка существования файла
+            if (!File.Exists(filePath))
+            {
+                Console.WriteLine($"\nОшибка: Файл '{filePath}' не найден!");
+                Console.WriteLine("Создаю тестовый файл для демонстрации...");
+                CreateTestFile();
+            }
+            
+            Console.WriteLine($"\nОбрабатывается файл: {filePath}");
+            Console.WriteLine(new string('=', 60));
+            
+            // Создаем и запускаем потоки
+            Thread thread1 = new Thread(CountSentences);
+            Thread thread2 = new Thread(ModifyFile);
+            
+            thread1.Start();
+            thread2.Start();
+            
+            // Ожидаем завершения обоих потоков
+            thread1.Join();
+            thread2.Join();
+            
+            Console.WriteLine("\n" + new string('=', 60));
+            Console.WriteLine("Программа завершена. Нажмите любую клавишу для выхода...");
+            Console.ReadKey();
+        }
+        
+        /// <summary>
+        /// Создает тестовый файл для демонстрации
+        /// </summary>
+        static void CreateTestFile()
+        {
+            filePath = "test_file.txt";
+            
+            string testContent = @"Это первое предложение! А это второе предложение? И третье предложение! 
+А вот четвертое предложение. Пятое предложение с восклицательным знаком! 
+Шестое предложение. Седьмое предложение? Восьмое предложение! Девятое предложение. 
+Десятое предложение! Одиннадцатое предложение. Двенадцатое предложение?";
+            
+            File.WriteAllText(filePath, testContent, Encoding.UTF8);
+            Console.WriteLine($"Создан тестовый файл: {filePath}");
+        }
+        
+        /// <summary>
+        /// Поток 1: Считывает содержимое файла и подсчитывает количество предложений
+        /// </summary>
+        static void CountSentences()
+        {
+            WriteToConsole("[Поток 1]", "Запущен. Начинает чтение файла...", ConsoleColor.Green);
+            
+            // Критическая секция для чтения файла
+            lock (fileLock)
+            {
+                try
+                {
+                    WriteToConsole("[Поток 1]", "Чтение файла...", ConsoleColor.Green);
+                    
+                    // Чтение всего содержимого файла
+                    fileContent = File.ReadAllText(filePath, Encoding.UTF8);
+                    
+                    WriteToConsole("[Поток 1]", $"Файл прочитан. Размер: {fileContent.Length} символов", ConsoleColor.Green);
+                    
+                    // Подсчет количества предложений
+                    sentenceCount = CountSentencesInText(fileContent);
+                    
+                    WriteToConsole("[Поток 1]", $"Количество предложений: {sentenceCount}", ConsoleColor.Green);
+                    WriteToConsole("[Поток 1]", "Завершил работу", ConsoleColor.Green);
+                }
+                catch (Exception ex)
+                {
+                    WriteToConsole("[Поток 1]", $"Ошибка при чтении файла: {ex.Message}", ConsoleColor.Red);
+                    sentenceCount = -1;
+                }
+            }
+            
+            // Сигнализируем второму потоку о завершении
+            firstThreadCompletedEvent.Set();
+        }
+        
+        /// <summary>
+        /// Подсчет количества предложений в тексте
+        /// Предложением считается текст, заканчивающийся на ., ! или ?
+        /// </summary>
+        static int CountSentencesInText(string text)
+        {
+            if (string.IsNullOrEmpty(text))
+                return 0;
+            
+            int count = 0;
+            bool inSentence = false;
+            
+            for (int i = 0; i < text.Length; i++)
+            {
+                char c = text[i];
+                
+                // Проверяем окончание предложения
+                if (c == '.' || c == '!' || c == '?')
+                {
+                    count++;
+                    inSentence = false;
+                }
+                else if (!char.IsWhiteSpace(c) && !inSentence)
+                {
+                    inSentence = true;
+                }
+            }
+            
+            return count;
+        }
+        
+        /// <summary>
+        /// Поток 2: Ожидает завершения первого потока и модифицирует файл
+        /// (заменяет все '!' на '#')
+        /// </summary>
+        static void ModifyFile()
+        {
+            WriteToConsole("[Поток 2]", "Запущен. Ожидает завершения первого потока...", ConsoleColor.Yellow);
+            
+            // Ожидаем сигнала от первого потока
+            firstThreadCompletedEvent.WaitOne();
+            
+            WriteToConsole("[Поток 2]", "Получил сигнал. Начинает модификацию файла...", ConsoleColor.Yellow);
+            
+            // Критическая секция для модификации файла
+            lock (fileLock)
+            {
+                try
+                {
+                    if (sentenceCount < 0)
+                    {
+                        WriteToConsole("[Поток 2]", "Первый поток завершился с ошибкой. Модификация отменена.", ConsoleColor.Red);
+                        return;
+                    }
+                    
+                    WriteToConsole("[Поток 2]", "Создание резервной копии файла...", ConsoleColor.Yellow);
+                    
+                    // Создаем резервную копию
+                    string backupPath = filePath + ".bak";
+                    File.Copy(filePath, backupPath, true);
+                    WriteToConsole("[Поток 2]", $"Резервная копия создана: {backupPath}", ConsoleColor.Yellow);
+                    
+                    // Модифицируем содержимое: заменяем '!' на '#'
+                    string modifiedContent = fileContent.Replace('!', '#');
+                    
+                    // Подсчитываем количество замен
+                    int replacementCount = 0;
+                    foreach (char c in fileContent)
+                    {
+                        if (c == '!') replacementCount++;
+                    }
+                    
+                    WriteToConsole("[Поток 2]", $"Найдено восклицательных знаков: {replacementCount}", ConsoleColor.Yellow);
+                    WriteToConsole("[Поток 2]", $"Выполняется замена '!' на '#'...", ConsoleColor.Yellow);
+                    
+                    // Записываем измененное содержимое обратно в файл
+                    File.WriteAllText(filePath, modifiedContent, Encoding.UTF8);
+                    
+                    WriteToConsole("[Поток 2]", $"Модификация завершена. Заменено символов: {replacementCount}", ConsoleColor.Yellow);
+                    WriteToConsole("[Поток 2]", "Завершил работу", ConsoleColor.Yellow);
+                }
+                catch (Exception ex)
+                {
+                    WriteToConsole("[Поток 2]", $"Ошибка при модификации файла: {ex.Message}", ConsoleColor.Red);
+                }
+            }
+        }
+        
+        /// <summary>
+        /// Потокобезопасный вывод в консоль с цветом
+        /// </summary>
+        static void WriteToConsole(string threadName, string message, ConsoleColor color)
+        {
+            lock (consoleLock)
+            {
+                Console.ForegroundColor = color;
+                Console.Write($"{threadName} ");
+                Console.ForegroundColor = ConsoleColor.White;
+                Console.WriteLine(message);
+                Console.ResetColor();
+            }
+        }
+    }
+}
